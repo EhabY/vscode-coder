@@ -748,6 +748,16 @@ export class OAuthSessionManager implements vscode.Disposable {
 	}
 
 	/**
+	 * Clear OAuth state when switching to non-OAuth authentication.
+	 * Clears in-memory state and OAuth tokens from storage.
+	 * Preserves client registration for potential future OAuth use.
+	 */
+	public async clearOAuthState(label: string): Promise<void> {
+		this.clearInMemoryTokens();
+		await this.secretsManager.clearOAuthTokens(label);
+	}
+
+	/**
 	 * Show a modal dialog to the user when OAuth re-authentication is required.
 	 * This is called when the refresh token is invalid or the client credentials are invalid.
 	 * Clears tokens directly and lets listeners handle updates.

@@ -127,6 +127,13 @@ export class DeploymentManager implements vscode.Disposable {
 		await this.secretsManager.setCurrentDeployment(undefined);
 	}
 
+	/**
+	 * Clear OAuth state for a deployment when switching to token auth.
+	 */
+	public async clearOAuthState(label: string): Promise<void> {
+		await this.oauthSessionManager.clearOAuthState(label);
+	}
+
 	private async setDeploymentCore(
 		deployment: DeploymentWithAuth,
 	): Promise<void> {

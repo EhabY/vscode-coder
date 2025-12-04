@@ -492,31 +492,21 @@ async function setupDeploymentFromUri(
 	// For non-token auth, we write a blank token since the `vscodessh`
 	// command currently always requires a token file. However, if there is
 	// a query parameter for non-token auth go ahead and use it anyway;
-	const token = await getToken(params, label, secretsManager);
-	if (token) {
+	let token: string | undefined = params.get("token") ?? undefined;
+	if (token === undefined) {
+		if (needToken(vscode.workspace.getConfiguration())) {
+			token = await secretsManager.getSessionToken(label);
+		} else {
+			token = "";
+		}
+	} else {
+		// Clear OAuth state since we're using a non-OAuth token
+		await deploymentManager.clearOAuthState(label);
 		await secretsManager.setSessionAuth(label, { url, token });
 	}
 
 	// Will automatically fetch the user and upgrade the deployment
 	await deploymentManager.setDeploymentWithoutAuth({ label, url, token });
-}
-
-async function getToken(
-	params: URLSearchParams,
-	label: string,
-	secretsManager: SecretsManager,
-): Promise<string | undefined> {
-	const paramsToken = params.get("token");
-	if (paramsToken !== null) {
-		// Always prefer the passed token if set
-		return paramsToken;
-	}
-
-	if (needToken(vscode.workspace.getConfiguration())) {
-		return await secretsManager.getSessionToken(label);
-	}
-
-	return "";
 }
 
 async function listStoredDeployments(

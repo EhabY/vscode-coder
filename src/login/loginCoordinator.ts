@@ -222,8 +222,14 @@ export class LoginCoordinator {
 		switch (authMethod) {
 			case "oauth":
 				return this.loginWithOAuth(client, oauthSessionManager, deployment);
-			case "legacy":
-				return this.loginWithToken(client);
+			case "legacy": {
+				const result = await this.loginWithToken(client);
+				if (result.success) {
+					// Clear OAuth state since user explicitly chose token auth
+					await oauthSessionManager.clearOAuthState(deployment.label);
+				}
+				return result;
+			}
 			case undefined:
 				return { success: false }; // User aborted
 		}
