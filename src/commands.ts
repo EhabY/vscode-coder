@@ -12,6 +12,7 @@ import { type ContextManager } from "./core/contextManager";
 import { type MementoManager } from "./core/mementoManager";
 import { type PathResolver } from "./core/pathResolver";
 import { type SecretsManager } from "./core/secretsManager";
+import { type DeploymentManager } from "./deployment";
 import { CertificateError } from "./error";
 import { getGlobalFlags } from "./globalFlags";
 import { type Logger } from "./logging/logger";
@@ -50,6 +51,7 @@ export class Commands {
 		serviceContainer: ServiceContainer,
 		private readonly extensionClient: CoderApi,
 		private readonly oauthSessionManager: OAuthSessionManager,
+		private readonly deploymentManager: DeploymentManager,
 	) {
 		this.vscodeProposed = serviceContainer.getVsCodeProposed();
 		this.logger = serviceContainer.getLogger();
@@ -82,7 +84,7 @@ export class Commands {
 		label?: string;
 		autoLogin?: boolean;
 	}): Promise<void> {
-		if (this.contextManager.get("coder.authenticated")) {
+		if (this.deploymentManager.isAuthenticated()) {
 			return;
 		}
 		this.logger.info("Logging in");
@@ -110,22 +112,16 @@ export class Commands {
 			oauthSessionManager: this.oauthSessionManager,
 		});
 
-		if (!result.success || !result.user || !result.token) {
+		if (!result.success || !result.user || result.token === undefined) {
 			return;
 		}
 
-		// Set client immediately so subsequent operations in this function have the correct host/token.
-		// The cross-window listener will also update the client, but that's async.
-		this.extensionClient.setCredentials(url, result.token);
-
-		// Set as current deployment
-		await this.secretsManager.setCurrentDeployment({ url, label });
-
-		// Update contexts
-		this.contextManager.set("coder.authenticated", true);
-		if (result.user.roles.some((role) => role.name === "owner")) {
-			this.contextManager.set("coder.isOwner", true);
-		}
+		await this.deploymentManager.changeDeployment({
+			url,
+			label,
+			token: result.token,
+			user: result.user,
+		});
 
 		vscode.window
 			.showInformationMessage(
@@ -172,27 +168,14 @@ export class Commands {
 	 * Log out from the currently logged-in deployment.
 	 */
 	public async logout(): Promise<void> {
-		const baseUrl = this.requireExtensionBaseUrl();
-		if (!this.contextManager.get("coder.authenticated")) {
+		if (!this.deploymentManager.isAuthenticated()) {
 			return;
 		}
 
-		const label = toSafeHost(baseUrl);
-		this.logger.info(`Logging out of deployment: ${label}`);
+		this.logger.info("Logging out");
 
-		// Fire and forget OAuth logout
-		this.oauthSessionManager.logout().catch((error) => {
-			this.logger.warn("OAuth logout failed, continuing with cleanup:", error);
-		});
+		await this.deploymentManager.logout();
 
-		// Clear from the REST client.  An empty url will indicate to other parts of
-		// the code that we are logged out.
-		this.extensionClient.setCredentials(undefined, undefined);
-
-		// Clear current deployment (triggers cross-window sync)
-		await this.secretsManager.setCurrentDeployment(undefined);
-
-		this.contextManager.set("coder.authenticated", false);
 		vscode.window
 			.showInformationMessage("You've been logged out of Coder!", "Login")
 			.then((action) => {

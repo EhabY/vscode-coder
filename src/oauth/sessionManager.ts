@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 
 import { CoderApi } from "../api/coderApi";
 import { type ServiceContainer } from "../core/container";
-import { type Deployment } from "../core/deployment";
+import { type Deployment } from "../deployment";
 import { type LoginCoordinator } from "../login/loginCoordinator";
 
 import { OAuthMetadataClient } from "./metadataClient";
@@ -674,16 +674,13 @@ export class OAuthSessionManager implements vscode.Disposable {
 	/**
 	 * Check if token should be refreshed.
 	 * Returns true if:
-	 * 1. Token expires in less than TOKEN_REFRESH_THRESHOLD_MS
-	 * 2. Last refresh attempt was more than REFRESH_THROTTLE_MS ago
-	 * 3. No refresh is currently in progress
+	 * 1. Stored tokens exist with a refresh token
+	 * 2. Token expires in less than TOKEN_REFRESH_THRESHOLD_MS
+	 * 3. Last refresh attempt was more than REFRESH_THROTTLE_MS ago
+	 * 4. No refresh is currently in progress
 	 */
 	private shouldRefreshToken(): boolean {
-		if (
-			!this.isLoggedInWithOAuth() ||
-			!this.storedTokens?.refresh_token ||
-			this.refreshPromise !== null
-		) {
+		if (!this.storedTokens?.refresh_token || this.refreshPromise !== null) {
 			return false;
 		}
 
@@ -694,6 +691,15 @@ export class OAuthSessionManager implements vscode.Disposable {
 
 		const timeUntilExpiry = this.storedTokens.expiry_timestamp - now;
 		return timeUntilExpiry < TOKEN_REFRESH_THRESHOLD_MS;
+	}
+
+	public async revokeRefreshToken(): Promise<void> {
+		if (!this.storedTokens?.refresh_token) {
+			this.logger.info("No refresh token to revoke");
+			return;
+		}
+
+		await this.revokeToken(this.storedTokens.refresh_token, "refresh_token");
 	}
 
 	/**
@@ -732,31 +738,6 @@ export class OAuthSessionManager implements vscode.Disposable {
 			this.logger.error("Token revocation failed:", error);
 			throw error;
 		}
-	}
-
-	/**
-	 * Logout by revoking tokens and clearing all OAuth data.
-	 */
-	public async logout(): Promise<void> {
-		if (!this.isLoggedInWithOAuth()) {
-			return;
-		}
-
-		// Revoke refresh token (which also invalidates access token per RFC 7009)
-		if (this.storedTokens?.refresh_token) {
-			try {
-				// TODO what if other windows are using this?
-				// We should only revoke if we are clearing the OAuth data
-				await this.revokeToken(this.storedTokens.refresh_token);
-			} catch (error) {
-				this.logger.warn("Token revocation failed during logout:", error);
-			}
-		}
-
-		this.clearInMemoryTokens();
-		this.deployment = undefined;
-
-		this.logger.info("OAuth logout complete");
 	}
 
 	/**

@@ -3,9 +3,9 @@ import * as vscode from "vscode";
 
 import { CoderApi } from "../api/coderApi";
 import { needToken } from "../api/utils";
-import { type Deployment } from "../core/deployment";
 import { type MementoManager } from "../core/mementoManager";
 import { type SecretsManager } from "../core/secretsManager";
+import { type Deployment } from "../deployment";
 import { CertificateError } from "../error";
 import { type Logger } from "../logging/logger";
 import { maybeAskAuthMethod, maybeAskUrl } from "../promptUtils";

@@ -5,7 +5,6 @@ const CONTEXT_DEFAULTS = {
 	"coder.isOwner": false,
 	"coder.loaded": false,
 	"coder.workspace.updatable": false,
-	"coder.devMode": false,
 } as const;
 
 type CoderContext = keyof typeof CONTEXT_DEFAULTS;
@@ -17,7 +16,12 @@ export class ContextManager implements vscode.Disposable {
 		for (const key of Object.keys(CONTEXT_DEFAULTS) as CoderContext[]) {
 			this.set(key, CONTEXT_DEFAULTS[key]);
 		}
-		this.set(
+		this.setInternalContexts(extensionContext);
+	}
+
+	private setInternalContexts(extensionContext: vscode.ExtensionContext): void {
+		vscode.commands.executeCommand(
+			"setContext",
 			"coder.devMode",
 			extensionContext.extensionMode === vscode.ExtensionMode.Development,
 		);

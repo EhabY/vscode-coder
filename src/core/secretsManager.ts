@@ -2,9 +2,8 @@ import { toSafeHost } from "../util";
 
 import type { Memento, SecretStorage, Disposable } from "vscode";
 
+import type { Deployment } from "../deployment";
 import type { TokenResponse, ClientRegistrationResponse } from "../oauth/types";
-
-import type { Deployment } from "./deployment";
 
 const SESSION_KEY_PREFIX = "coder.session.";
 const OAUTH_TOKENS_PREFIX = "coder.oauth.tokens.";

@@ -12,8 +12,8 @@ import { attachOAuthInterceptors } from "./api/oauthInterceptors";
 import { needToken } from "./api/utils";
 import { Commands } from "./commands";
 import { ServiceContainer } from "./core/container";
-import { type Deployment } from "./core/deployment";
 import { type SecretsManager } from "./core/secretsManager";
+import { DeploymentManager } from "./deployment";
 import { CertificateError, getErrorDetail } from "./error";
 import { OAuthSessionManager } from "./oauth/sessionManager";
 import { CALLBACK_PATH } from "./oauth/utils";
@@ -134,81 +134,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 		ctx.subscriptions,
 	);
 
-	// Listen for deployment auth changes (token updates) for the current deployment
-	// This listener is re-registered when the user logs into a different deployment
-	let authChangeDisposable: vscode.Disposable | undefined;
-	const registerAuthListener = (deploymentLabel: string | undefined) => {
-		authChangeDisposable?.dispose();
-
-		if (!deploymentLabel) {
-			return;
-		}
-
-		output.debug("Registering auth listener for deployment", deploymentLabel);
-		authChangeDisposable = secretsManager.onDidChangeSessionAuth(
-			deploymentLabel,
-			(auth) => {
-				client.setCredentials(auth?.url, auth?.token);
-
-				// Update authentication context for current deployment
-				// TODO(ehab) this might never even happen :thinking:
-				contextManager.set("coder.authenticated", auth !== undefined);
-			},
-		);
-	};
-
-	// Initialize auth listener for current deployment
-	registerAuthListener(deployment?.label);
-	ctx.subscriptions.push({ dispose: () => authChangeDisposable?.dispose() });
-
-	const changeDeployment = async (
-		deployment: Deployment | null,
-		sessionToken?: string,
-	) => {
-		// Update client
-		if (deployment) {
-			const token =
-				sessionToken ||
-				(await secretsManager.getSessionToken(deployment.label));
-			client.setCredentials(deployment.url, token);
-			await oauthSessionManager.setDeployment(deployment);
-		} else {
-			client.setCredentials(undefined, undefined);
-			oauthSessionManager.clearDeployment();
-		}
-		registerAuthListener(deployment?.label);
-
-		// Update context
-		contextManager.set("coder.authenticated", Boolean(deployment));
-
-		// Refresh workspaces
-		myWorkspacesProvider.fetchAndRefresh();
-		allWorkspacesProvider.fetchAndRefresh();
-	};
-
-	const changeDeploymentAndPersist = async (
-		deployment: Deployment | null,
-		sessionToken?: string,
-	) => {
-		await changeDeployment(deployment, sessionToken);
-		// Persist and sync deployment across windows
-		await secretsManager.setCurrentDeployment(deployment ?? undefined);
-		await mementoManager.addToUrlHistory(deployment?.url ?? "");
-	};
-
-	// Listen for deployment changes from other windows (cross-window sync)
-	ctx.subscriptions.push(
-		secretsManager.onDidChangeCurrentDeployment(async ({ deployment }) => {
-			const isLoggedIn = contextManager.get("coder.authenticated");
-			if (isLoggedIn) {
-				// We keep whatever deployment we have if we're logged in
-				return;
-			}
-
-			output.info("Deployment changed from another window");
-			return changeDeployment(deployment);
-		}),
+	// Create deployment manager to centralize deployment state management
+	const deploymentManager = DeploymentManager.create(
+		serviceContainer,
+		client,
+		oauthSessionManager,
+		[myWorkspacesProvider, allWorkspacesProvider],
 	);
+	ctx.subscriptions.push(deploymentManager);
 
 	// Handle vscode:// URIs.
 	const uriHandler = vscode.window.registerUriHandler({
@@ -242,15 +175,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				await setupDeploymentFromUri(
 					params,
 					serviceContainer,
-					changeDeploymentAndPersist,
+					deploymentManager,
 				);
 
-				vscode.commands.executeCommand(
-					"coder.open",
+				await commands.open(
 					owner,
 					workspace,
-					agent,
-					folder,
+					agent ?? undefined,
+					folder ?? undefined,
 					openRecent,
 				);
 			} else if (uri.path === "/openDevContainer") {
@@ -271,6 +203,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				if (!workspaceName) {
 					throw new Error(
 						"workspace name must be specified as a query parameter",
+					);
+				}
+
+				if (!workspaceAgent) {
+					throw new Error(
+						"workspace agent must be specified as a query parameter",
 					);
 				}
 
@@ -295,18 +233,17 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				await setupDeploymentFromUri(
 					params,
 					serviceContainer,
-					changeDeploymentAndPersist,
+					deploymentManager,
 				);
 
-				vscode.commands.executeCommand(
-					"coder.openDevContainer",
+				await commands.openDevContainer(
 					workspaceOwner,
 					workspaceName,
 					workspaceAgent,
 					devContainerName,
 					devContainerFolder,
-					localWorkspaceFolder,
-					localConfigFile,
+					localWorkspaceFolder ?? "",
+					localConfigFile ?? "",
 				);
 			} else {
 				throw new Error(`Unknown path ${uri.path}`);
@@ -317,7 +254,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	// Register globally available commands.  Many of these have visibility
 	// controlled by contexts, see `when` in the package.json.
-	const commands = new Commands(serviceContainer, client, oauthSessionManager);
+	const commands = new Commands(
+		serviceContainer,
+		client,
+		oauthSessionManager,
+		deploymentManager,
+	);
 	ctx.subscriptions.push(
 		vscode.commands.registerCommand(
 			"coder.login",
@@ -396,10 +338,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			if (details) {
 				ctx.subscriptions.push(details);
 
-				await changeDeploymentAndPersist(
-					{ label: details.label, url: details.url },
-					details.token,
-				);
+				// Will automatically fetch the user and upgrade the deployment
+				await deploymentManager.setDeploymentWithoutAuth({
+					label: details.label,
+					url: details.url,
+					token: details.token,
+				});
 			}
 		} catch (ex) {
 			if (ex instanceof CertificateError) {
@@ -439,31 +383,24 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 		}
 	}
 
-	// See if the plugin client is authenticated.
-	const baseUrl = client.getAxiosInstance().defaults.baseURL;
-	if (baseUrl) {
-		output.info(`Logged in to ${baseUrl}; checking credentials`);
-		client
-			.getAuthenticatedUser()
-			.then((user) => {
-				if (user && user.roles) {
+	// Initialize deployment manager with stored deployment (if any).
+	// Skip if already set by remote.setup above.
+	if (deploymentManager.getCurrentDeployment()) {
+		contextManager.set("coder.loaded", true);
+	} else if (deployment) {
+		output.info(`Initializing deployment: ${deployment.url}`);
+		const storedToken = await secretsManager.getSessionToken(deployment.label);
+		deploymentManager
+			.setDeploymentWithoutAuth({ ...deployment, token: storedToken })
+			.then(() => {
+				if (deploymentManager.isAuthenticated()) {
 					output.info("Credentials are valid");
-					contextManager.set("coder.authenticated", true);
-					if (user.roles.find((role) => role.name === "owner")) {
-						contextManager.set("coder.isOwner", true);
-					}
-
-					// Fetch and monitor workspaces, now that we know the client is good.
-					myWorkspacesProvider.fetchAndRefresh();
-					allWorkspacesProvider.fetchAndRefresh();
 				} else {
-					output.warn("No error, but got unexpected response", user);
+					output.info("Deployment set but not authenticated");
 				}
 			})
 			.catch((error) => {
-				// This should be a failure to make the request, like the header command
-				// errored.
-				output.warn("Failed to check user authentication", error);
+				output.warn("Failed to initialize deployment", error);
 				vscode.window.showErrorMessage(
 					`Failed to check user authentication: ${error.message}`,
 				);
@@ -522,16 +459,13 @@ async function showTreeViewSearch(id: string): Promise<void> {
  * Sets up deployment from URI parameters. Handles URL prompting, client setup,
  * and token storage. Throws if user cancels URL input.
  *
- * Updates the client host/token, auth listener, OAuth manager, context, etc.
- * through the `changeDeploymentAndPersist` callback.
+ * If authentication succeeds, uses changeDeployment with the user.
+ * If authentication fails, uses setDeploymentWithoutAuth to let remote.setup handle 401.
  */
 async function setupDeploymentFromUri(
 	params: URLSearchParams,
 	serviceContainer: ServiceContainer,
-	changeDeploymentAndPersist: (
-		deployment: Deployment | null,
-		sessionToken?: string,
-	) => Promise<void>,
+	deploymentManager: DeploymentManager,
 ): Promise<void> {
 	const secretsManager = serviceContainer.getSecretsManager();
 	const mementoManager = serviceContainer.getMementoManager();
@@ -563,7 +497,8 @@ async function setupDeploymentFromUri(
 		await secretsManager.setSessionAuth(label, { url, token });
 	}
 
-	await changeDeploymentAndPersist({ label, url }, token);
+	// Will automatically fetch the user and upgrade the deployment
+	await deploymentManager.setDeploymentWithoutAuth({ label, url, token });
 }
 
 async function getToken(
@@ -580,6 +515,7 @@ async function getToken(
 	if (needToken(vscode.workspace.getConfiguration())) {
 		return await secretsManager.getSessionToken(label);
 	}
+
 	return "";
 }
 
