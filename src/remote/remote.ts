@@ -19,7 +19,6 @@ import {
 } from "../api/agentMetadataHelper";
 import { extractAgents } from "../api/api-helper";
 import { CoderApi } from "../api/coderApi";
-import { attachOAuthInterceptors } from "../api/oauthInterceptors";
 import { needToken } from "../api/utils";
 import { type Commands } from "../commands";
 import { type CliManager } from "../core/cliManager";
@@ -33,7 +32,6 @@ import { getGlobalFlags } from "../globalFlags";
 import { Inbox } from "../inbox";
 import { type Logger } from "../logging/logger";
 import { type LoginCoordinator } from "../login/loginCoordinator";
-import { OAuthSessionManager } from "../oauth/sessionManager";
 import {
 	AuthorityPrefix,
 	escapeCommandArg,
@@ -128,14 +126,6 @@ export class Remote {
 				),
 			);
 
-			// Create OAuth session manager for this remote deployment
-			const remoteOAuthManager = await OAuthSessionManager.create(
-				{ url: baseUrlRaw, label: parts.label },
-				this.serviceContainer,
-				this.extensionContext.extension.id,
-			);
-			disposables.push(remoteOAuthManager);
-
 			const promptForLoginAndRetry = async (
 				message: string,
 				url: string | undefined,
@@ -145,7 +135,6 @@ export class Remote {
 					url,
 					message,
 					detailPrefix: `You must log in to access ${workspaceName}.`,
-					oauthSessionManager: remoteOAuthManager,
 				});
 
 				if (result.success) {
@@ -179,7 +168,6 @@ export class Remote {
 			// client to remain unaffected by whatever the plugin is doing.
 			const workspaceClient = CoderApi.create(baseUrlRaw, token, this.logger);
 			disposables.push(workspaceClient);
-			attachOAuthInterceptors(workspaceClient, this.logger, remoteOAuthManager);
 			// Store for use in commands.
 			this.commands.remoteWorkspaceClient = workspaceClient;
 

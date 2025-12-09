@@ -17,7 +17,6 @@ import { CertificateError } from "./error";
 import { getGlobalFlags } from "./globalFlags";
 import { type Logger } from "./logging/logger";
 import { type LoginCoordinator } from "./login/loginCoordinator";
-import { type OAuthSessionManager } from "./oauth/sessionManager";
 import { maybeAskAgent, maybeAskUrl } from "./promptUtils";
 import { escapeCommandArg, toRemoteAuthority, toSafeHost } from "./util";
 import {
@@ -50,7 +49,6 @@ export class Commands {
 	public constructor(
 		serviceContainer: ServiceContainer,
 		private readonly extensionClient: CoderApi,
-		private readonly oauthSessionManager: OAuthSessionManager,
 		private readonly deploymentManager: DeploymentManager,
 	) {
 		this.vscodeProposed = serviceContainer.getVsCodeProposed();
@@ -109,7 +107,6 @@ export class Commands {
 			label,
 			url,
 			autoLogin: args?.autoLogin,
-			oauthSessionManager: this.oauthSessionManager,
 		});
 
 		if (!result.success || !result.user || result.token === undefined) {

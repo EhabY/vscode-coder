@@ -4,7 +4,6 @@ import { type ContextManager } from "../core/contextManager";
 import { type MementoManager } from "../core/mementoManager";
 import { type SecretsManager } from "../core/secretsManager";
 import { type Logger } from "../logging/logger";
-import { type OAuthSessionManager } from "../oauth/sessionManager";
 import { type WorkspaceProvider } from "../workspace/workspacesProvider";
 
 import {
@@ -22,7 +21,6 @@ import type * as vscode from "vscode";
  * Centralizes:
  * - In-memory deployment state (url, label, token, user)
  * - Client credential updates
- * - OAuth session management
  * - Auth listener registration
  * - Context updates (coder.authenticated, coder.isOwner)
  * - Workspace provider refresh
@@ -41,7 +39,6 @@ export class DeploymentManager implements vscode.Disposable {
 	private constructor(
 		serviceContainer: ServiceContainer,
 		private readonly client: CoderApi,
-		private readonly oauthSessionManager: OAuthSessionManager,
 		private readonly workspaceProviders: WorkspaceProvider[],
 	) {
 		this.secretsManager = serviceContainer.getSecretsManager();
@@ -53,13 +50,11 @@ export class DeploymentManager implements vscode.Disposable {
 	public static create(
 		serviceContainer: ServiceContainer,
 		client: CoderApi,
-		oauthSessionManager: OAuthSessionManager,
 		workspaceProviders: WorkspaceProvider[],
 	): DeploymentManager {
 		const manager = new DeploymentManager(
 			serviceContainer,
 			client,
-			oauthSessionManager,
 			workspaceProviders,
 		);
 		manager.subscribeToCrossWindowChanges();
@@ -87,7 +82,7 @@ export class DeploymentManager implements vscode.Disposable {
 	public async changeDeployment(
 		deployment: DeploymentWithAuth & { user: User },
 	): Promise<void> {
-		await this.setDeploymentCore(deployment);
+		this.setDeploymentCore(deployment);
 
 		this.refreshWorkspaces();
 		await this.persistDeployment(deployment);
@@ -101,12 +96,7 @@ export class DeploymentManager implements vscode.Disposable {
 	public async setDeploymentWithoutAuth(
 		deployment: Deployment & { token?: string },
 	): Promise<void> {
-		await this.setDeploymentCore({ ...deployment });
-
-		// This can be async since we'll get an auth event if the token is refreshed
-		this.oauthSessionManager.refreshIfAlmostExpired().catch((error) => {
-			this.logger.warn("Setup token refresh failed:", error);
-		});
+		this.setDeploymentCore({ ...deployment });
 
 		await this.tryFetchAndUpgradeUser();
 	}
@@ -116,7 +106,6 @@ export class DeploymentManager implements vscode.Disposable {
 	 */
 	public async logout(): Promise<void> {
 		this.client.setCredentials(undefined, undefined);
-		this.oauthSessionManager.clearDeployment();
 
 		this.authListenerDisposable?.dispose();
 		this.authListenerDisposable = undefined;
@@ -127,22 +116,12 @@ export class DeploymentManager implements vscode.Disposable {
 		await this.secretsManager.setCurrentDeployment(undefined);
 	}
 
-	/**
-	 * Clear OAuth state for a deployment when switching to token auth.
-	 */
-	public async clearOAuthState(label: string): Promise<void> {
-		await this.oauthSessionManager.clearOAuthState(label);
-	}
-
-	private async setDeploymentCore(
-		deployment: DeploymentWithAuth,
-	): Promise<void> {
+	private setDeploymentCore(deployment: DeploymentWithAuth): void {
 		if (deployment.token === undefined) {
 			this.client.setHost(deployment.url);
 		} else {
 			this.client.setCredentials(deployment.url, deployment.token);
 		}
-		await this.oauthSessionManager.setDeployment(deployment);
 		this.registerAuthListener(deployment.label);
 		this.currentDeployment = { ...deployment };
 		this.updateAuthContexts(deployment.user);

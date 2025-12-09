@@ -8,15 +8,12 @@ import * as vscode from "vscode";
 
 import { errToStr } from "./api/api-helper";
 import { CoderApi } from "./api/coderApi";
-import { attachOAuthInterceptors } from "./api/oauthInterceptors";
 import { needToken } from "./api/utils";
 import { Commands } from "./commands";
 import { ServiceContainer } from "./core/container";
 import { type SecretsManager } from "./core/secretsManager";
 import { DeploymentManager } from "./deployment";
 import { CertificateError, getErrorDetail } from "./error";
-import { OAuthSessionManager } from "./oauth/sessionManager";
-import { CALLBACK_PATH } from "./oauth/utils";
 import { maybeAskUrl } from "./promptUtils";
 import { Remote } from "./remote/remote";
 import { getRemoteSshExtension } from "./remote/sshExtension";
@@ -72,14 +69,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	const deployment = await secretsManager.getCurrentDeployment();
 
-	// Create OAuth session manager with login coordinator
-	const oauthSessionManager = await OAuthSessionManager.create(
-		deployment,
-		serviceContainer,
-		ctx.extension.id,
-	);
-	ctx.subscriptions.push(oauthSessionManager);
-
 	// This client tracks the current login and will be used through the life of
 	// the plugin to poll workspaces for the current login, as well as being used
 	// in commands that operate on the current login.
@@ -89,7 +78,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 		output,
 	);
 	ctx.subscriptions.push(client);
-	attachOAuthInterceptors(client, output, oauthSessionManager);
 
 	const myWorkspacesProvider = new WorkspaceProvider(
 		WorkspaceQuery.Mine,
@@ -135,26 +123,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 	);
 
 	// Create deployment manager to centralize deployment state management
-	const deploymentManager = DeploymentManager.create(
-		serviceContainer,
-		client,
-		oauthSessionManager,
-		[myWorkspacesProvider, allWorkspacesProvider],
-	);
+	const deploymentManager = DeploymentManager.create(serviceContainer, client, [
+		myWorkspacesProvider,
+		allWorkspacesProvider,
+	]);
 	ctx.subscriptions.push(deploymentManager);
 
 	// Handle vscode:// URIs.
 	const uriHandler = vscode.window.registerUriHandler({
 		handleUri: async (uri) => {
 			const params = new URLSearchParams(uri.query);
-
-			if (uri.path === CALLBACK_PATH) {
-				const code = params.get("code");
-				const state = params.get("state");
-				const error = params.get("error");
-				await oauthSessionManager.handleCallback(code, state, error);
-				return;
-			}
 
 			if (uri.path === "/open") {
 				const owner = params.get("owner");
@@ -254,12 +232,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	// Register globally available commands.  Many of these have visibility
 	// controlled by contexts, see `when` in the package.json.
-	const commands = new Commands(
-		serviceContainer,
-		client,
-		oauthSessionManager,
-		deploymentManager,
-	);
+	const commands = new Commands(serviceContainer, client, deploymentManager);
 	ctx.subscriptions.push(
 		vscode.commands.registerCommand(
 			"coder.login",
@@ -500,8 +473,6 @@ async function setupDeploymentFromUri(
 			token = "";
 		}
 	} else {
-		// Clear OAuth state since we're using a non-OAuth token
-		await deploymentManager.clearOAuthState(label);
 		await secretsManager.setSessionAuth(label, { url, token });
 	}
 
