@@ -8,11 +8,14 @@ import * as vscode from "vscode";
 
 import { errToStr } from "./api/api-helper";
 import { CoderApi } from "./api/coderApi";
+import { attachOAuthInterceptors } from "./api/oauthInterceptors";
 import { Commands } from "./commands";
 import { ServiceContainer } from "./core/container";
 import { type SecretsManager } from "./core/secretsManager";
 import { DeploymentManager } from "./deployment/deploymentManager";
 import { CertificateError, getErrorDetail } from "./error";
+import { OAuthSessionManager } from "./oauth/sessionManager";
+import { CALLBACK_PATH } from "./oauth/utils";
 import { maybeAskUrl } from "./promptUtils";
 import { Remote } from "./remote/remote";
 import { getRemoteSshExtension } from "./remote/sshExtension";
@@ -68,6 +71,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	const deployment = await secretsManager.getCurrentDeployment();
 
+	// Create OAuth session manager with login coordinator
+	const oauthSessionManager = await OAuthSessionManager.create(
+		deployment,
+		serviceContainer,
+		ctx.extension.id,
+	);
+	ctx.subscriptions.push(oauthSessionManager);
+
 	// This client tracks the current login and will be used through the life of
 	// the plugin to poll workspaces for the current login, as well as being used
 	// in commands that operate on the current login.
@@ -78,6 +89,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 		output,
 	);
 	ctx.subscriptions.push(client);
+	attachOAuthInterceptors(client, output, oauthSessionManager);
 
 	const myWorkspacesProvider = new WorkspaceProvider(
 		WorkspaceQuery.Mine,
@@ -123,16 +135,26 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 	);
 
 	// Create deployment manager to centralize deployment state management
-	const deploymentManager = DeploymentManager.create(serviceContainer, client, [
-		myWorkspacesProvider,
-		allWorkspacesProvider,
-	]);
+	const deploymentManager = DeploymentManager.create(
+		serviceContainer,
+		client,
+		oauthSessionManager,
+		[myWorkspacesProvider, allWorkspacesProvider],
+	);
 	ctx.subscriptions.push(deploymentManager);
 
 	// Handle vscode:// URIs.
 	const uriHandler = vscode.window.registerUriHandler({
 		handleUri: async (uri) => {
 			const params = new URLSearchParams(uri.query);
+
+			if (uri.path === CALLBACK_PATH) {
+				const code = params.get("code");
+				const state = params.get("state");
+				const error = params.get("error");
+				await oauthSessionManager.handleCallback(code, state, error);
+				return;
+			}
 
 			if (uri.path === "/open") {
 				const owner = params.get("owner");
@@ -150,7 +172,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 					throw new Error("workspace must be specified as a query parameter");
 				}
 
-				await setupDeploymentFromUri(params, serviceContainer);
+				await setupDeploymentFromUri(
+					params,
+					serviceContainer,
+					deploymentManager,
+				);
 
 				await commands.open(
 					owner,
@@ -204,7 +230,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 					);
 				}
 
-				await setupDeploymentFromUri(params, serviceContainer);
+				await setupDeploymentFromUri(
+					params,
+					serviceContainer,
+					deploymentManager,
+				);
 
 				await commands.openDevContainer(
 					workspaceOwner,
@@ -224,7 +254,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	// Register globally available commands.  Many of these have visibility
 	// controlled by contexts, see `when` in the package.json.
-	const commands = new Commands(serviceContainer, client, deploymentManager);
+	const commands = new Commands(
+		serviceContainer,
+		client,
+		oauthSessionManager,
+		deploymentManager,
+	);
 	ctx.subscriptions.push(
 		vscode.commands.registerCommand(
 			"coder.login",
@@ -425,6 +460,7 @@ async function showTreeViewSearch(id: string): Promise<void> {
 async function setupDeploymentFromUri(
 	params: URLSearchParams,
 	serviceContainer: ServiceContainer,
+	deploymentManager: DeploymentManager,
 ): Promise<void> {
 	const secretsManager = serviceContainer.getSecretsManager();
 	const mementoManager = serviceContainer.getMementoManager();
@@ -459,6 +495,8 @@ async function setupDeploymentFromUri(
 		}
 	} else {
 		await secretsManager.setSessionAuth(safeHost, { url, token });
+		// Clear OAuth state since we're using a non-OAuth token
+		await deploymentManager.clearOAuthState(safeHost);
 	}
 }
 

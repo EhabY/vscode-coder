@@ -5,7 +5,8 @@ import * as vscode from "vscode";
 import { CoderApi } from "../api/coderApi";
 import { needToken } from "../api/utils";
 import { CertificateError } from "../error";
-import { maybeAskUrl } from "../promptUtils";
+import { type OAuthSessionManager } from "../oauth/sessionManager";
+import { maybeAskAuthMethod, maybeAskUrl } from "../promptUtils";
 
 import type { User } from "coder/site/src/api/typesGenerated";
 
@@ -21,6 +22,7 @@ type LoginResult =
 interface LoginOptions {
 	safeHostname: string;
 	url: string | undefined;
+	oauthSessionManager: OAuthSessionManager;
 	autoLogin?: boolean;
 }
 
@@ -44,11 +46,12 @@ export class LoginCoordinator {
 	public async ensureLoggedIn(
 		options: LoginOptions & { url: string },
 	): Promise<LoginResult> {
-		const { safeHostname, url } = options;
+		const { safeHostname, url, oauthSessionManager } = options;
 		return this.executeWithGuard(safeHostname, async () => {
 			const result = await this.attemptLogin(
 				{ safeHostname, url },
 				options.autoLogin ?? false,
+				oauthSessionManager,
 			);
 
 			await this.persistSessionAuth(result, safeHostname, url);
@@ -58,12 +61,13 @@ export class LoginCoordinator {
 	}
 
 	/**
-	 * Shows dialog then login - for system-initiated auth (remote).
+	 * Shows dialog then login - for system-initiated auth (remote, OAuth refresh).
 	 */
 	public async ensureLoggedInWithDialog(
 		options: LoginOptions & { message?: string; detailPrefix?: string },
 	): Promise<LoginResult> {
-		const { safeHostname, url, detailPrefix, message } = options;
+		const { safeHostname, url, detailPrefix, message, oauthSessionManager } =
+			options;
 		return this.executeWithGuard(safeHostname, async () => {
 			// Show dialog promise
 			const dialogPromise = this.vscodeProposed.window
@@ -95,6 +99,7 @@ export class LoginCoordinator {
 						const result = await this.attemptLogin(
 							{ url: newUrl, safeHostname },
 							false,
+							oauthSessionManager,
 						);
 
 						await this.persistSessionAuth(result, safeHostname, newUrl);
@@ -183,7 +188,7 @@ export class LoginCoordinator {
 	}
 
 	/**
-	 * Attempt to authenticate using token, or mTLS. If necessary, prompts
+	 * Attempt to authenticate using OAuth, token, or mTLS. If necessary, prompts
 	 * for authentication method and credentials. Returns the token and user upon
 	 * successful authentication. Null means the user aborted or authentication
 	 * failed (in which case an error notification will have been displayed).
@@ -191,6 +196,7 @@ export class LoginCoordinator {
 	private async attemptLogin(
 		deployment: Deployment,
 		isAutoLogin: boolean,
+		oauthSessionManager: OAuthSessionManager,
 	): Promise<LoginResult> {
 		const needsToken = needToken(vscode.workspace.getConfiguration());
 		const client = CoderApi.create(deployment.url, "", this.logger);
@@ -237,8 +243,21 @@ export class LoginCoordinator {
 			}
 		}
 
-		const result = await this.loginWithToken(client);
-		return result;
+		const authMethod = await maybeAskAuthMethod(client);
+		switch (authMethod) {
+			case "oauth":
+				return this.loginWithOAuth(client, oauthSessionManager, deployment);
+			case "legacy": {
+				const result = await this.loginWithToken(client);
+				if (result.success) {
+					// Clear OAuth state since user explicitly chose token auth
+					await oauthSessionManager.clearOAuthState(deployment.safeHostname);
+				}
+				return result;
+			}
+			case undefined:
+				return { success: false }; // User aborted
+		}
 	}
 
 	/**
@@ -296,5 +315,49 @@ export class LoginCoordinator {
 		}
 
 		return { success: false };
+	}
+
+	/**
+	 * OAuth authentication flow.
+	 */
+	private async loginWithOAuth(
+		client: CoderApi,
+		oauthSessionManager: OAuthSessionManager,
+		deployment: Deployment,
+	): Promise<LoginResult> {
+		try {
+			this.logger.info("Starting OAuth authentication");
+
+			const tokenResponse = await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: "Authenticating",
+					cancellable: false,
+				},
+				async (progress) =>
+					await oauthSessionManager.login(client, deployment, progress),
+			);
+
+			// Validate token by fetching user
+			client.setSessionToken(tokenResponse.access_token);
+			const user = await client.getAuthenticatedUser();
+
+			return {
+				success: true,
+				token: tokenResponse.access_token,
+				user,
+			};
+		} catch (error) {
+			const title = "OAuth authentication failed";
+			this.logger.error(title, error);
+			if (error instanceof CertificateError) {
+				error.showNotification(title);
+			} else {
+				vscode.window.showErrorMessage(
+					`${title}: ${getErrorMessage(error, "Unknown error")}`,
+				);
+			}
+			return { success: false };
+		}
 	}
 }
