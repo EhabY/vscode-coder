@@ -182,6 +182,11 @@
 					"id": "coder",
 					"title": "Coder Remote",
 					"icon": "media/logo-white.svg"
+				},
+				{
+					"id": "coderTasks",
+					"title": "Coder Tasks",
+					"icon": "media/tasks-logo.svg"
 				}
 			]
 		},
@@ -199,13 +204,14 @@
 					"visibility": "visible",
 					"icon": "media/logo-white.svg",
 					"when": "coder.authenticated && coder.isOwner"
-				},
+				}
+			],
+			"coderTasks": [
 				{
 					"type": "webview",
 					"id": "coder.tasksPanel",
-					"name": "Tasks",
-					"icon": "media/logo-white.svg",
-					"when": "coder.authenticated && coder.devMode"
+					"name": "Coder Tasks",
+					"when": "coder.authenticated"
 				}
 			]
 		},
@@ -308,6 +314,12 @@
 				"command": "coder.manageCredentials",
 				"title": "Manage Credentials",
 				"category": "Coder"
+			},
+			{
+				"command": "coder.tasks.refresh",
+				"title": "Refresh Tasks",
+				"category": "Coder",
+				"icon": "$(refresh)"
 			}
 		],
 		"menus": {
@@ -370,6 +382,10 @@
 				},
 				{
 					"command": "coder.manageCredentials"
+				},
+				{
+					"command": "coder.tasks.refresh",
+					"when": "false"
 				}
 			],
 			"view/title": [
@@ -404,6 +420,11 @@
 					"command": "coder.searchAllWorkspaces",
 					"when": "coder.authenticated && view == allWorkspaces",
 					"group": "navigation@3"
+				},
+				{
+					"command": "coder.tasks.refresh",
+					"when": "coder.authenticated && view == coder.tasksPanel",
+					"group": "navigation@1"
 				}
 			],
 			"view/item/context": [
@@ -463,52 +484,54 @@
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {
-		"@eslint/js": "^9.39.2",
-		"@eslint/markdown": "^7.5.1",
-		"@testing-library/react": "^16.3.2",
-		"@tsconfig/node20": "^20.1.8",
-		"@types/mocha": "^10.0.10",
-		"@types/node": "^20",
-		"@types/proper-lockfile": "^4.1.4",
-		"@types/react": "catalog:",
-		"@types/react-dom": "catalog:",
-		"@types/semver": "^7.7.1",
-		"@types/ua-parser-js": "0.7.39",
-		"@types/vscode": "^1.95.0",
-		"@types/ws": "^8.18.1",
-		"@typescript-eslint/eslint-plugin": "^8.53.1",
-		"@typescript-eslint/parser": "^8.53.1",
-		"@vitejs/plugin-react-swc": "catalog:",
-		"@vitest/coverage-v8": "^4.0.16",
-		"@vscode/test-cli": "^0.0.12",
-		"@vscode/test-electron": "^2.5.2",
-		"@vscode/vsce": "^3.7.1",
-		"bufferutil": "^4.1.0",
-		"coder": "github:coder/coder#main",
-		"concurrently": "^9.2.1",
-		"dayjs": "^1.11.19",
-		"electron": "^40.0.0",
-		"esbuild": "^0.27.2",
-		"eslint": "^9.39.2",
-		"eslint-config-prettier": "^10.1.8",
-		"eslint-import-resolver-typescript": "^4.4.4",
-		"eslint-plugin-import-x": "^4.16.1",
-		"eslint-plugin-package-json": "^0.88.2",
-		"eslint-plugin-react": "^7.37.0",
-		"eslint-plugin-react-hooks": "^5.0.0",
-		"globals": "^17.0.0",
-		"jsdom": "^27.4.0",
-		"jsonc-eslint-parser": "^2.4.2",
-		"memfs": "^4.56.10",
-		"prettier": "^3.7.4",
-		"react": "catalog:",
-		"react-dom": "catalog:",
-		"typescript": "catalog:",
-		"typescript-eslint": "^8.53.1",
-		"utf-8-validate": "^6.0.6",
-		"vite": "catalog:",
-		"vitest": "^4.0.16"
-	},
+    "@eslint/js": "^9.39.2",
+    "@eslint/markdown": "^7.5.1",
+    "@testing-library/react": "^16.3.2",
+    "@tsconfig/node20": "^20.1.8",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@types/semver": "^7.7.1",
+    "@types/ua-parser-js": "0.7.39",
+    "@types/vscode": "^1.95.0",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.53.1",
+    "@typescript-eslint/parser": "^8.53.1",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitest/coverage-v8": "^4.0.16",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
+    "babel-plugin-react-compiler": "catalog:",
+    "bufferutil": "^4.1.0",
+    "coder": "github:coder/coder#main",
+    "concurrently": "^9.2.1",
+    "dayjs": "^1.11.19",
+    "electron": "^40.0.0",
+    "esbuild": "^0.27.2",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import-x": "^4.16.1",
+    "eslint-plugin-package-json": "^0.88.2",
+    "eslint-plugin-react": "^7.37.0",
+    "eslint-plugin-react-compiler": "catalog:",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "globals": "^17.0.0",
+    "jsdom": "^27.4.0",
+    "jsonc-eslint-parser": "^2.4.2",
+    "memfs": "^4.56.10",
+    "prettier": "^3.7.4",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "typescript-eslint": "^8.53.1",
+    "utf-8-validate": "^6.0.6",
+    "vite": "catalog:",
+    "vitest": "^4.0.16"
+  },
 	"extensionPack": [
 		"ms-vscode-remote.remote-ssh"
 	],
